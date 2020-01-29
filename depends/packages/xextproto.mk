@@ -1,17 +1,15 @@
-package=libXau
-$(package)_version=1.0.8
-$(package)_download_path=http://xorg.freedesktop.org/releases/individual/lib/
+package=xextproto
+$(package)_version=7.3.0
+$(package)_download_path=http://xorg.freedesktop.org/releases/individual/proto
 $(package)_file_name=$(package)-$($(package)_version).tar.bz2
-$(package)_sha256_hash=fdd477320aeb5cdd67272838722d6b7d544887dfe7de46e1e7cc0c27c2bea4f2
-$(package)_dependencies=xproto
-
-define $(package)_set_vars
-  $(package)_config_opts=--disable-shared
-  $(package)_config_opts_linux=--with-pic
-endef
+$(package)_sha256_hash=f3f4b23ac8db9c3a9e0d8edb591713f3d70ef9c3b175970dd8823dfc92aa5bb0
 
 define $(package)_preprocess_cmds
   cp -f $(BASEDIR)/config.guess $(BASEDIR)/config.sub .
+endef
+
+define $(package)_set_vars
+$(package)_config_opts=--disable-shared
 endef
 
 define $(package)_config_cmds
