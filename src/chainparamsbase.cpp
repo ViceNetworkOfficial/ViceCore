@@ -1,52 +1,129 @@
 // Copyright (c) 2010 Satoshi Nakamoto
-// Copyright (c) 2009-2019 The Bitcoin Core developers
+// Copyright (c) 2009-2014 The Bitcoin developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <chainparamsbase.h>
+#include "chainparamsbase.h"
 
-#include <tinyformat.h>
-#include <util/system.h>
-#include <util/memory.h>
+#include "util.h"
 
 #include <assert.h>
 
-const std::string CBaseChainParams::MAIN = "main";
-const std::string CBaseChainParams::TESTNET = "test";
-const std::string CBaseChainParams::REGTEST = "regtest";
+#include <boost/assign/list_of.hpp>
 
-void SetupChainParamsBaseOptions()
+using namespace boost::assign;
+
+/**
+ * Main network
+ */
+class CBaseMainParams : public CBaseChainParams
 {
-    gArgs.AddArg("-chain=<chain>", "Use the chain <chain> (default: main). Allowed values: main, test, regtest", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
-    gArgs.AddArg("-regtest", "Enter regression test mode, which uses a special chain in which blocks can be solved instantly. "
-                 "This is intended for regression testing tools and app development. Equivalent to -chain=regtest.", ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::CHAINPARAMS);
-    gArgs.AddArg("-segwitheight=<n>", "Set the activation height of segwit. -1 to disable. (regtest-only)", ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
-    gArgs.AddArg("-testnet", "Use the test chain. Equivalent to -chain=test.", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
-    gArgs.AddArg("-vbparams=deployment:start:end", "Use given start/end times for specified version bits deployment (regtest-only)", ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::CHAINPARAMS);
-}
+public:
+    CBaseMainParams()
+    {
+        networkID = CBaseChainParams::MAIN;
+        nRPCPort = 26211;
+    }
+};
+static CBaseMainParams mainParams;
 
-static std::unique_ptr<CBaseChainParams> globalChainBaseParams;
+/**
+ * Testnet (v3)
+ */
+class CBaseTestNetParams : public CBaseMainParams
+{
+public:
+    CBaseTestNetParams()
+    {
+        networkID = CBaseChainParams::TESTNET;
+        nRPCPort = 38843;
+        strDataDir = "testnet4";
+    }
+};
+static CBaseTestNetParams testNetParams;
+
+/*
+ * Regression test
+ */
+class CBaseRegTestParams : public CBaseTestNetParams
+{
+public:
+    CBaseRegTestParams()
+    {
+        networkID = CBaseChainParams::REGTEST;
+        strDataDir = "regtest";
+    }
+};
+static CBaseRegTestParams regTestParams;
+
+/*
+ * Unit test
+ */
+class CBaseUnitTestParams : public CBaseMainParams
+{
+public:
+    CBaseUnitTestParams()
+    {
+        networkID = CBaseChainParams::UNITTEST;
+        strDataDir = "unittest";
+    }
+};
+static CBaseUnitTestParams unitTestParams;
+
+static CBaseChainParams* pCurrentBaseParams = 0;
 
 const CBaseChainParams& BaseParams()
 {
-    assert(globalChainBaseParams);
-    return *globalChainBaseParams;
+    assert(pCurrentBaseParams);
+    return *pCurrentBaseParams;
 }
 
-std::unique_ptr<CBaseChainParams> CreateBaseChainParams(const std::string& chain)
+void SelectBaseParams(CBaseChainParams::Network network)
 {
-    if (chain == CBaseChainParams::MAIN)
-        return MakeUnique<CBaseChainParams>("", 8332);
-    else if (chain == CBaseChainParams::TESTNET)
-        return MakeUnique<CBaseChainParams>("testnet3", 18332);
-    else if (chain == CBaseChainParams::REGTEST)
-        return MakeUnique<CBaseChainParams>("regtest", 18443);
-    else
-        throw std::runtime_error(strprintf("%s: Unknown chain %s.", __func__, chain));
+    switch (network) {
+    case CBaseChainParams::MAIN:
+        pCurrentBaseParams = &mainParams;
+        break;
+    case CBaseChainParams::TESTNET:
+        pCurrentBaseParams = &testNetParams;
+        break;
+    case CBaseChainParams::REGTEST:
+        pCurrentBaseParams = &regTestParams;
+        break;
+    case CBaseChainParams::UNITTEST:
+        pCurrentBaseParams = &unitTestParams;
+        break;
+    default:
+        assert(false && "Unimplemented network");
+        return;
+    }
 }
 
-void SelectBaseParams(const std::string& chain)
+CBaseChainParams::Network NetworkIdFromCommandLine()
 {
-    globalChainBaseParams = CreateBaseChainParams(chain);
-    gArgs.SelectConfigNetwork(chain);
+    bool fRegTest = GetBoolArg("-regtest", false);
+    bool fTestNet = GetBoolArg("-testnet", false);
+
+    if (fTestNet && fRegTest)
+        return CBaseChainParams::MAX_NETWORK_TYPES;
+    if (fRegTest)
+        return CBaseChainParams::REGTEST;
+    if (fTestNet)
+        return CBaseChainParams::TESTNET;
+    return CBaseChainParams::MAIN;
+}
+
+bool SelectBaseParamsFromCommandLine()
+{
+    CBaseChainParams::Network network = NetworkIdFromCommandLine();
+    if (network == CBaseChainParams::MAX_NETWORK_TYPES)
+        return false;
+
+    SelectBaseParams(network);
+    return true;
+}
+
+bool AreBaseParamsConfigured()
+{
+    return pCurrentBaseParams != NULL;
 }

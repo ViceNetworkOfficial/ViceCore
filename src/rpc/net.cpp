@@ -1,108 +1,130 @@
-// Copyright (c) 2009-2019 The Bitcoin Core developers
+// Copyright (c) 2009-2019 The Bitcoin developers
+// Copyright (c) 2014-2019 The Dash developers
+// Copyright (c) 2015-2019 The ZENZO developers
+// Copyright (c) 2018-2019 The VICE developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <rpc/server.h>
+#include "rpc/server.h"
 
-#include <banman.h>
-#include <clientversion.h>
-#include <core_io.h>
-#include <net.h>
-#include <net_permissions.h>
-#include <net_processing.h>
-#include <net_types.h> // For banmap_t
-#include <netbase.h>
-#include <node/context.h>
-#include <policy/settings.h>
-#include <rpc/blockchain.h>
-#include <rpc/protocol.h>
-#include <rpc/util.h>
-#include <sync.h>
-#include <timedata.h>
-#include <util/strencodings.h>
-#include <util/system.h>
-#include <validation.h>
-#include <version.h>
-#include <warnings.h>
+#include "clientversion.h"
+#include "main.h"
+#include "net.h"
+#include "netbase.h"
+#include "protocol.h"
+#include "sync.h"
+#include "timedata.h"
+#include "ui_interface.h"
+#include "util.h"
+#include "version.h"
 
-#include <univalue.h>
+#include <boost/foreach.hpp>
 
-static UniValue getconnectioncount(const JSONRPCRequest& request)
+#include "json/json_spirit_value.h"
+
+using namespace json_spirit;
+using namespace std;
+
+Value getconnectioncount(const Array& params, bool fHelp)
 {
-            RPCHelpMan{"getconnectioncount",
-                "\nReturns the number of connections to other nodes.\n",
-                {},
-                RPCResult{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "getconnectioncount\n"
+            "\nReturns the number of connections to other nodes.\n"
+            "\nbResult:\n"
             "n          (numeric) The connection count\n"
-                },
-                RPCExamples{
-                    HelpExampleCli("getconnectioncount", "")
-            + HelpExampleRpc("getconnectioncount", "")
-                },
-            }.Check(request);
+            "\nExamples:\n" +
+            HelpExampleCli("getconnectioncount", "") + HelpExampleRpc("getconnectioncount", ""));
 
-    if(!g_rpc_node->connman)
-        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
-
-    return (int)g_rpc_node->connman->GetNodeCount(CConnman::CONNECTIONS_ALL);
+    LOCK(cs_vNodes);
+    return (int)vNodes.size();
 }
 
-static UniValue ping(const JSONRPCRequest& request)
+Value getdvminfo(const Array& params, bool fHelp)
 {
-            RPCHelpMan{"ping",
-                "\nRequests that a ping be sent to all other nodes, to measure ping time.\n"
-                "Results provided in getpeerinfo, pingtime and pingwait fields are decimal seconds.\n"
-                "Ping command is handled in queue with all other commands, so it measures processing backlog, not just network ping.\n",
-                {},
-                RPCResults{},
-                RPCExamples{
-                    HelpExampleCli("ping", "")
-            + HelpExampleRpc("ping", "")
-                },
-            }.Check(request);
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "getdvminfo\n"
+            "\nReturns the internal data of the DVM as a json object.\n"
+            "\nbResult:\n"
+            "  {\n"
+            "    \"active\": true|false,          (bool) Is the Updater (DVM) active\n"
+            "    \"status\": true|false,          (bool) The Update Status of the DVM, true means an update is available\n"
+            "    \"total\": n,                    (numeric) The quantity of all measured peers\n"
+            "    \"higher\": n,                   (numeric) The quantity of measured peers with a higher version than us\n"
+            "    \"current\": n,                  (numeric) The quantity of measured peers with a version matching us\n"
+            "    \"lower\": n,                    (numeric) The quantity of measured peers with a lower version than us\n"
+            "  }\n"
+            "\nExamples:\n" +
+            HelpExampleCli("getdvminfo", "") + HelpExampleRpc("getdvminfo", ""));
 
-    if(!g_rpc_node->connman)
-        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
+    Object obj;
+    obj.push_back(Pair("active", fUpdateCheck));
+    obj.push_back(Pair("status", ((shouldUpgrade == 0) ? false : true)));
+    obj.push_back(Pair("total", (lowerVerPeers + currentVerPeers + higherVerPeers)));
+    obj.push_back(Pair("higher", higherVerPeers));
+    obj.push_back(Pair("current", currentVerPeers));
+    obj.push_back(Pair("lower", lowerVerPeers));
+
+    return obj;
+}
+
+Value ping(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "ping\n"
+            "\nRequests that a ping be sent to all other nodes, to measure ping time.\n"
+            "Results provided in getpeerinfo, pingtime and pingwait fields are decimal seconds.\n"
+            "Ping command is handled in queue with all other commands, so it measures processing backlog, not just network ping.\n"
+            "\nExamples:\n" +
+            HelpExampleCli("ping", "") + HelpExampleRpc("ping", ""));
 
     // Request that each node send a ping during next message processing pass
-    g_rpc_node->connman->ForEachNode([](CNode* pnode) {
-        pnode->fPingQueued = true;
-    });
-    return NullUniValue;
+    LOCK(cs_vNodes);
+    BOOST_FOREACH (CNode* pNode, vNodes) {
+        pNode->fPingQueued = true;
+    }
+
+    return Value::null;
 }
 
-static UniValue getpeerinfo(const JSONRPCRequest& request)
+static void CopyNodeStats(std::vector<CNodeStats>& vstats)
 {
-            RPCHelpMan{"getpeerinfo",
-                "\nReturns data about each connected network node as a json array of objects.\n",
-                {},
-                RPCResult{
+    vstats.clear();
+
+    LOCK(cs_vNodes);
+    vstats.reserve(vNodes.size());
+    BOOST_FOREACH (CNode* pnode, vNodes) {
+        CNodeStats stats;
+        pnode->copyStats(stats);
+        vstats.push_back(stats);
+    }
+}
+
+Value getpeerinfo(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "getpeerinfo\n"
+            "\nReturns data about each connected network node as a json array of objects.\n"
+            "\nbResult:\n"
             "[\n"
             "  {\n"
             "    \"id\": n,                   (numeric) Peer index\n"
-            "    \"addr\":\"host:port\",      (string) The IP address and port of the peer\n"
-            "    \"addrbind\":\"ip:port\",    (string) Bind address of the connection to the peer\n"
-            "    \"addrlocal\":\"ip:port\",   (string) Local address as reported by the peer\n"
-            "    \"mapped_as\":\"mapped_as\", (string) The AS in the BGP route to the peer used for diversifying peer selection\n"
+            "    \"addr\":\"host:port\",      (string) The ip address and port of the peer\n"
+            "    \"addrlocal\":\"ip:port\",   (string) local address\n"
             "    \"services\":\"xxxxxxxxxxxxxxxx\",   (string) The services offered\n"
-            "    \"servicesnames\":[              (array) the services offered, in human-readable form\n"
-            "        \"SERVICE_NAME\",         (string) the service name if it is recognised\n"
-            "         ...\n"
-            "     ],\n"
-            "    \"relaytxes\":true|false,    (boolean) Whether peer has asked us to relay transactions to it\n"
-            "    \"lastsend\": ttt,           (numeric) The " + UNIX_EPOCH_TIME + " of the last send\n"
-            "    \"lastrecv\": ttt,           (numeric) The " + UNIX_EPOCH_TIME + " of the last receive\n"
+            "    \"lastsend\": ttt,           (numeric) The time in seconds since epoch (Jan 1 1970 GMT) of the last send\n"
+            "    \"lastrecv\": ttt,           (numeric) The time in seconds since epoch (Jan 1 1970 GMT) of the last receive\n"
             "    \"bytessent\": n,            (numeric) The total bytes sent\n"
             "    \"bytesrecv\": n,            (numeric) The total bytes received\n"
-            "    \"conntime\": ttt,           (numeric) The " + UNIX_EPOCH_TIME + " of the connection\n"
-            "    \"timeoffset\": ttt,         (numeric) The time offset in seconds\n"
-            "    \"pingtime\": n,             (numeric) ping time (if available)\n"
-            "    \"minping\": n,              (numeric) minimum observed ping time (if any at all)\n"
-            "    \"pingwait\": n,             (numeric) ping wait (if non-zero)\n"
-            "    \"version\": v,              (numeric) The peer version, such as 70001\n"
-            "    \"subver\": \"/Satoshi:0.8.5/\",  (string) The string version\n"
+            "    \"conntime\": ttt,           (numeric) The connection time in seconds since epoch (Jan 1 1970 GMT)\n"
+            "    \"pingtime\": n,             (numeric) ping time\n"
+            "    \"pingwait\": n,             (numeric) ping wait\n"
+            "    \"version\": v,              (numeric) The peer version, such as 7001\n"
+            "    \"subver\": \"/VICE Core:x.x.x.x/\",  (string) The string version\n"
             "    \"inbound\": true|false,     (boolean) Inbound (true) or Outbound (false)\n"
-            "    \"addnode\": true|false,     (boolean) Whether connection was due to addnode/-connect or if it was an automatic/inbound connection\n"
             "    \"startingheight\": n,       (numeric) The starting height (block) of the peer\n"
             "    \"banscore\": n,             (numeric) The ban score\n"
             "    \"synced_headers\": n,       (numeric) The last header we have in common with this peer\n"
@@ -110,106 +132,53 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
             "    \"inflight\": [\n"
             "       n,                        (numeric) The heights of blocks we're currently asking from this peer\n"
             "       ...\n"
-            "    ],\n"
-            "    \"whitelisted\": true|false, (boolean) Whether the peer is whitelisted\n"
-            "    \"minfeefilter\": n,         (numeric) The minimum fee rate for transactions this peer accepts\n"
-            "    \"bytessent_per_msg\": {\n"
-            "       \"msg\": n,               (numeric) The total bytes sent aggregated by message type\n"
-            "                               When a message type is not listed in this json object, the bytes sent are 0.\n"
-            "                               Only known message types can appear as keys in the object.\n"
-            "       ...\n"
-            "    },\n"
-            "    \"bytesrecv_per_msg\": {\n"
-            "       \"msg\": n,               (numeric) The total bytes received aggregated by message type\n"
-            "                               When a message type is not listed in this json object, the bytes received are 0.\n"
-            "                               Only known message types can appear as keys in the object and all bytes received of unknown message types are listed under '"+NET_MESSAGE_COMMAND_OTHER+"'.\n"
-            "       ...\n"
-            "    }\n"
+            "    ]\n"
             "  }\n"
             "  ,...\n"
             "]\n"
-                },
-                RPCExamples{
-                    HelpExampleCli("getpeerinfo", "")
-            + HelpExampleRpc("getpeerinfo", "")
-                },
-            }.Check(request);
+            "\nExamples:\n" +
+            HelpExampleCli("getpeerinfo", "") + HelpExampleRpc("getpeerinfo", ""));
 
-    if(!g_rpc_node->connman)
-        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
+    vector<CNodeStats> vstats;
+    CopyNodeStats(vstats);
 
-    std::vector<CNodeStats> vstats;
-    g_rpc_node->connman->GetNodeStats(vstats);
+    Array ret;
 
-    UniValue ret(UniValue::VARR);
-
-    for (const CNodeStats& stats : vstats) {
-        UniValue obj(UniValue::VOBJ);
+    BOOST_FOREACH (const CNodeStats& stats, vstats) {
+        Object obj;
         CNodeStateStats statestats;
         bool fStateStats = GetNodeStateStats(stats.nodeid, statestats);
-        obj.pushKV("id", stats.nodeid);
-        obj.pushKV("addr", stats.addrName);
+        obj.push_back(Pair("id", stats.nodeid));
+        obj.push_back(Pair("addr", stats.addrName));
         if (!(stats.addrLocal.empty()))
-            obj.pushKV("addrlocal", stats.addrLocal);
-        if (stats.addrBind.IsValid())
-            obj.pushKV("addrbind", stats.addrBind.ToString());
-        if (stats.m_mapped_as != 0) {
-            obj.pushKV("mapped_as", uint64_t(stats.m_mapped_as));
-        }
-        obj.pushKV("services", strprintf("%016x", stats.nServices));
-        obj.pushKV("servicesnames", GetServicesNames(stats.nServices));
-        obj.pushKV("relaytxes", stats.fRelayTxes);
-        obj.pushKV("lastsend", stats.nLastSend);
-        obj.pushKV("lastrecv", stats.nLastRecv);
-        obj.pushKV("bytessent", stats.nSendBytes);
-        obj.pushKV("bytesrecv", stats.nRecvBytes);
-        obj.pushKV("conntime", stats.nTimeConnected);
-        obj.pushKV("timeoffset", stats.nTimeOffset);
-        if (stats.dPingTime > 0.0)
-            obj.pushKV("pingtime", stats.dPingTime);
-        if (stats.dMinPing < static_cast<double>(std::numeric_limits<int64_t>::max())/1e6)
-            obj.pushKV("minping", stats.dMinPing);
+            obj.push_back(Pair("addrlocal", stats.addrLocal));
+        obj.push_back(Pair("services", strprintf("%016x", stats.nServices)));
+        obj.push_back(Pair("lastsend", stats.nLastSend));
+        obj.push_back(Pair("lastrecv", stats.nLastRecv));
+        obj.push_back(Pair("bytessent", stats.nSendBytes));
+        obj.push_back(Pair("bytesrecv", stats.nRecvBytes));
+        obj.push_back(Pair("conntime", stats.nTimeConnected));
+        obj.push_back(Pair("pingtime", stats.dPingTime));
         if (stats.dPingWait > 0.0)
-            obj.pushKV("pingwait", stats.dPingWait);
-        obj.pushKV("version", stats.nVersion);
+            obj.push_back(Pair("pingwait", stats.dPingWait));
+        obj.push_back(Pair("version", stats.nVersion));
         // Use the sanitized form of subver here, to avoid tricksy remote peers from
-        // corrupting or modifying the JSON output by putting special characters in
+        // corrupting or modifiying the JSON output by putting special characters in
         // their ver message.
-        obj.pushKV("subver", stats.cleanSubVer);
-        obj.pushKV("inbound", stats.fInbound);
-        obj.pushKV("addnode", stats.m_manual_connection);
-        obj.pushKV("startingheight", stats.nStartingHeight);
+        obj.push_back(Pair("subver", stats.cleanSubVer));
+        obj.push_back(Pair("inbound", stats.fInbound));
+        obj.push_back(Pair("startingheight", stats.nStartingHeight));
         if (fStateStats) {
-            obj.pushKV("banscore", statestats.nMisbehavior);
-            obj.pushKV("synced_headers", statestats.nSyncHeight);
-            obj.pushKV("synced_blocks", statestats.nCommonHeight);
-            UniValue heights(UniValue::VARR);
-            for (const int height : statestats.vHeightInFlight) {
+            obj.push_back(Pair("banscore", statestats.nMisbehavior));
+            obj.push_back(Pair("synced_headers", statestats.nSyncHeight));
+            obj.push_back(Pair("synced_blocks", statestats.nCommonHeight));
+            Array heights;
+            BOOST_FOREACH (int height, statestats.vHeightInFlight) {
                 heights.push_back(height);
             }
-            obj.pushKV("inflight", heights);
+            obj.push_back(Pair("inflight", heights));
         }
-        obj.pushKV("whitelisted", stats.m_legacyWhitelisted);
-        UniValue permissions(UniValue::VARR);
-        for (const auto& permission : NetPermissions::ToStrings(stats.m_permissionFlags)) {
-            permissions.push_back(permission);
-        }
-        obj.pushKV("permissions", permissions);
-        obj.pushKV("minfeefilter", ValueFromAmount(stats.minFeeFilter));
-
-        UniValue sendPerMsgCmd(UniValue::VOBJ);
-        for (const auto& i : stats.mapSendBytesPerMsgCmd) {
-            if (i.second > 0)
-                sendPerMsgCmd.pushKV(i.first, i.second);
-        }
-        obj.pushKV("bytessent_per_msg", sendPerMsgCmd);
-
-        UniValue recvPerMsgCmd(UniValue::VOBJ);
-        for (const auto& i : stats.mapRecvBytesPerMsgCmd) {
-            if (i.second > 0)
-                recvPerMsgCmd.pushKV(i.first, i.second);
-        }
-        obj.pushKV("bytesrecv_per_msg", recvPerMsgCmd);
+        obj.push_back(Pair("whitelisted", stats.fWhitelisted));
 
         ret.push_back(obj);
     }
@@ -217,266 +186,242 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
     return ret;
 }
 
-static UniValue addnode(const JSONRPCRequest& request)
+Value addnode(const Array& params, bool fHelp)
 {
-    std::string strCommand;
-    if (!request.params[1].isNull())
-        strCommand = request.params[1].get_str();
-    if (request.fHelp || request.params.size() != 2 ||
+    string strCommand;
+    if (params.size() == 2)
+        strCommand = params[1].get_str();
+    if (fHelp || params.size() != 2 ||
         (strCommand != "onetry" && strCommand != "add" && strCommand != "remove"))
-        throw std::runtime_error(
-            RPCHelpMan{"addnode",
-                "\nAttempts to add or remove a node from the addnode list.\n"
-                "Or try a connection to a node once.\n"
-                "Nodes added using addnode (or -connect) are protected from DoS disconnection and are not required to be\n"
-                "full nodes/support SegWit as other outbound peers are (though such peers will not be synced from).\n",
-                {
-                    {"node", RPCArg::Type::STR, RPCArg::Optional::NO, "The node (see getpeerinfo for nodes)"},
-                    {"command", RPCArg::Type::STR, RPCArg::Optional::NO, "'add' to add a node to the list, 'remove' to remove a node from the list, 'onetry' to try a connection to the node once"},
-                },
-                RPCResults{},
-                RPCExamples{
-                    HelpExampleCli("addnode", "\"192.168.0.6:8333\" \"onetry\"")
-            + HelpExampleRpc("addnode", "\"192.168.0.6:8333\", \"onetry\"")
-                },
-            }.ToString());
+        throw runtime_error(
+            "addnode \"node\" \"add|remove|onetry\"\n"
+            "\nAttempts add or remove a node from the addnode list.\n"
+            "Or try a connection to a node once.\n"
+            "\nArguments:\n"
+            "1. \"node\"     (string, required) The node (see getpeerinfo for nodes)\n"
+            "2. \"command\"  (string, required) 'add' to add a node to the list, 'remove' to remove a node from the list, 'onetry' to try a connection to the node once\n"
+            "\nExamples:\n" +
+            HelpExampleCli("addnode", "\"192.168.0.6:26210\" \"onetry\"") + HelpExampleRpc("addnode", "\"192.168.0.6:5510\", \"onetry\""));
 
-    if(!g_rpc_node->connman)
-        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
+    string strNode = params[0].get_str();
 
-    std::string strNode = request.params[0].get_str();
-
-    if (strCommand == "onetry")
-    {
+    if (strCommand == "onetry") {
         CAddress addr;
-        g_rpc_node->connman->OpenNetworkConnection(addr, false, nullptr, strNode.c_str(), false, false, true);
-        return NullUniValue;
+        OpenNetworkConnection(addr, NULL, strNode.c_str());
+        return Value::null;
     }
 
-    if (strCommand == "add")
-    {
-        if(!g_rpc_node->connman->AddNode(strNode))
+    LOCK(cs_vAddedNodes);
+    vector<string>::iterator it = vAddedNodes.begin();
+    for (; it != vAddedNodes.end(); it++)
+        if (strNode == *it)
+            break;
+
+    if (strCommand == "add") {
+        if (it != vAddedNodes.end())
             throw JSONRPCError(RPC_CLIENT_NODE_ALREADY_ADDED, "Error: Node already added");
-    }
-    else if(strCommand == "remove")
-    {
-        if(!g_rpc_node->connman->RemoveAddedNode(strNode))
+        vAddedNodes.push_back(strNode);
+    } else if (strCommand == "remove") {
+        if (it == vAddedNodes.end())
             throw JSONRPCError(RPC_CLIENT_NODE_NOT_ADDED, "Error: Node has not been added.");
+        vAddedNodes.erase(it);
     }
 
-    return NullUniValue;
+    return Value::null;
 }
 
-static UniValue disconnectnode(const JSONRPCRequest& request)
+Value disconnectnode(const Array& params, bool fHelp)
 {
-            RPCHelpMan{"disconnectnode",
-                "\nImmediately disconnects from the specified peer node.\n"
-                "\nStrictly one out of 'address' and 'nodeid' can be provided to identify the node.\n"
-                "\nTo disconnect by nodeid, either set 'address' to the empty string, or call using the named 'nodeid' argument only.\n",
-                {
-                    {"address", RPCArg::Type::STR, /* default */ "fallback to nodeid", "The IP address/port of the node"},
-                    {"nodeid", RPCArg::Type::NUM, /* default */ "fallback to address", "The node ID (see getpeerinfo for node IDs)"},
-                },
-                RPCResults{},
-                RPCExamples{
-                    HelpExampleCli("disconnectnode", "\"192.168.0.6:8333\"")
-            + HelpExampleCli("disconnectnode", "\"\" 1")
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+            "disconnectnode \"node\" \n"
+            "\nImmediately disconnects from the specified node.\n"
+            "\nArguments:\n"
+            "1. \"node\"     (string, required) The node (see getpeerinfo for nodes)\n"
+            "\nExamples:\n"
+            + HelpExampleCli("disconnectnode", "\"192.168.0.6:8333\"")
             + HelpExampleRpc("disconnectnode", "\"192.168.0.6:8333\"")
-            + HelpExampleRpc("disconnectnode", "\"\", 1")
-                },
-            }.Check(request);
+        );
 
-    if(!g_rpc_node->connman)
-        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
-
-    bool success;
-    const UniValue &address_arg = request.params[0];
-    const UniValue &id_arg = request.params[1];
-
-    if (!address_arg.isNull() && id_arg.isNull()) {
-        /* handle disconnect-by-address */
-        success = g_rpc_node->connman->DisconnectNode(address_arg.get_str());
-    } else if (!id_arg.isNull() && (address_arg.isNull() || (address_arg.isStr() && address_arg.get_str().empty()))) {
-        /* handle disconnect-by-id */
-        NodeId nodeid = (NodeId) id_arg.get_int64();
-        success = g_rpc_node->connman->DisconnectNode(nodeid);
-    } else {
-        throw JSONRPCError(RPC_INVALID_PARAMS, "Only one of address and nodeid should be provided.");
-    }
-
-    if (!success) {
+    CNode* pNode = FindNode(params[0].get_str());
+    if (pNode == NULL)
         throw JSONRPCError(RPC_CLIENT_NODE_NOT_CONNECTED, "Node not found in connected nodes");
-    }
 
-    return NullUniValue;
+    pNode->fDisconnect = true;
+
+    return true;
 }
 
-static UniValue getaddednodeinfo(const JSONRPCRequest& request)
+Value getaddednodeinfo(const Array& params, bool fHelp)
 {
-            RPCHelpMan{"getaddednodeinfo",
-                "\nReturns information about the given added node, or all added nodes\n"
-                "(note that onetry addnodes are not listed here)\n",
-                {
-                    {"node", RPCArg::Type::STR, /* default */ "all nodes", "If provided, return information about this specific node, otherwise all nodes are returned."},
-                },
-                RPCResult{
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw runtime_error(
+            "getaddednodeinfo dns ( \"node\" )\n"
+            "\nReturns information about the given added node, or all added nodes\n"
+            "(note that onetry addnodes are not listed here)\n"
+            "If dns is false, only a list of added nodes will be provided,\n"
+            "otherwise connected information will also be available.\n"
+            "\nArguments:\n"
+            "1. dns        (boolean, required) If false, only a list of added nodes will be provided, otherwise connected information will also be available.\n"
+            "2. \"node\"   (string, optional) If provided, return information about this specific node, otherwise all nodes are returned.\n"
+            "\nResult:\n"
             "[\n"
             "  {\n"
-            "    \"addednode\" : \"192.168.0.201\",   (string) The node IP address or name (as provided to addnode)\n"
+            "    \"addednode\" : \"192.168.0.201\",   (string) The node ip address\n"
             "    \"connected\" : true|false,          (boolean) If connected\n"
-            "    \"addresses\" : [                    (list of objects) Only when connected = true\n"
+            "    \"addresses\" : [\n"
             "       {\n"
-            "         \"address\" : \"192.168.0.201:8333\",  (string) The bitcoin server IP and port we're connected to\n"
+            "         \"address\" : \"192.168.0.201:26210\",  (string) The vicenetwork server host and port\n"
             "         \"connected\" : \"outbound\"           (string) connection, inbound or outbound\n"
             "       }\n"
+            "       ,...\n"
             "     ]\n"
             "  }\n"
             "  ,...\n"
             "]\n"
-                },
-                RPCExamples{
-                    HelpExampleCli("getaddednodeinfo", "\"192.168.0.201\"")
-            + HelpExampleRpc("getaddednodeinfo", "\"192.168.0.201\"")
-                },
-            }.Check(request);
+            "\nExamples:\n" +
+            HelpExampleCli("getaddednodeinfo", "true") + HelpExampleCli("getaddednodeinfo", "true \"192.168.0.201\"") + HelpExampleRpc("getaddednodeinfo", "true, \"192.168.0.201\""));
 
-    if(!g_rpc_node->connman)
-        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
+    bool fDns = params[0].get_bool();
 
-    std::vector<AddedNodeInfo> vInfo = g_rpc_node->connman->GetAddedNodeInfo();
-
-    if (!request.params[0].isNull()) {
-        bool found = false;
-        for (const AddedNodeInfo& info : vInfo) {
-            if (info.strAddedNode == request.params[0].get_str()) {
-                vInfo.assign(1, info);
-                found = true;
+    list<string> laddedNodes(0);
+    if (params.size() == 1) {
+        LOCK(cs_vAddedNodes);
+        BOOST_FOREACH (string& strAddNode, vAddedNodes)
+            laddedNodes.push_back(strAddNode);
+    } else {
+        string strNode = params[1].get_str();
+        LOCK(cs_vAddedNodes);
+        BOOST_FOREACH (string& strAddNode, vAddedNodes)
+            if (strAddNode == strNode) {
+                laddedNodes.push_back(strAddNode);
                 break;
             }
-        }
-        if (!found) {
+        if (laddedNodes.size() == 0)
             throw JSONRPCError(RPC_CLIENT_NODE_NOT_ADDED, "Error: Node has not been added.");
+    }
+
+    Array ret;
+    if (!fDns) {
+        BOOST_FOREACH (string& strAddNode, laddedNodes) {
+            Object obj;
+            obj.push_back(Pair("addednode", strAddNode));
+            ret.push_back(obj);
+        }
+        return ret;
+    }
+
+    list<pair<string, vector<CService> > > laddedAddreses(0);
+    BOOST_FOREACH (string& strAddNode, laddedNodes) {
+        vector<CService> vservNode(0);
+        if (Lookup(strAddNode.c_str(), vservNode, Params().GetDefaultPort(), fNameLookup, 0))
+            laddedAddreses.push_back(make_pair(strAddNode, vservNode));
+        else {
+            Object obj;
+            obj.push_back(Pair("addednode", strAddNode));
+            obj.push_back(Pair("connected", false));
+            Array addresses;
+            obj.push_back(Pair("addresses", addresses));
         }
     }
 
-    UniValue ret(UniValue::VARR);
+    LOCK(cs_vNodes);
+    for (list<pair<string, vector<CService> > >::iterator it = laddedAddreses.begin(); it != laddedAddreses.end(); it++) {
+        Object obj;
+        obj.push_back(Pair("addednode", it->first));
 
-    for (const AddedNodeInfo& info : vInfo) {
-        UniValue obj(UniValue::VOBJ);
-        obj.pushKV("addednode", info.strAddedNode);
-        obj.pushKV("connected", info.fConnected);
-        UniValue addresses(UniValue::VARR);
-        if (info.fConnected) {
-            UniValue address(UniValue::VOBJ);
-            address.pushKV("address", info.resolvedAddress.ToString());
-            address.pushKV("connected", info.fInbound ? "inbound" : "outbound");
-            addresses.push_back(address);
+        Array addresses;
+        bool fConnected = false;
+        BOOST_FOREACH (CService& addrNode, it->second) {
+            bool fFound = false;
+            Object node;
+            node.push_back(Pair("address", addrNode.ToString()));
+            BOOST_FOREACH (CNode* pnode, vNodes)
+                if (pnode->addr == addrNode) {
+                    fFound = true;
+                    fConnected = true;
+                    node.push_back(Pair("connected", pnode->fInbound ? "inbound" : "outbound"));
+                    break;
+                }
+            if (!fFound)
+                node.push_back(Pair("connected", "false"));
+            addresses.push_back(node);
         }
-        obj.pushKV("addresses", addresses);
+        obj.push_back(Pair("connected", fConnected));
+        obj.push_back(Pair("addresses", addresses));
         ret.push_back(obj);
     }
 
     return ret;
 }
 
-static UniValue getnettotals(const JSONRPCRequest& request)
+Value getnettotals(const Array& params, bool fHelp)
 {
-            RPCHelpMan{"getnettotals",
-                "\nReturns information about network traffic, including bytes in, bytes out,\n"
-                "and current time.\n",
-                {},
-                RPCResult{
+    if (fHelp || params.size() > 0)
+        throw runtime_error(
+            "getnettotals\n"
+            "\nReturns information about network traffic, including bytes in, bytes out,\n"
+            "and current time.\n"
+            "\nResult:\n"
             "{\n"
             "  \"totalbytesrecv\": n,   (numeric) Total bytes received\n"
             "  \"totalbytessent\": n,   (numeric) Total bytes sent\n"
-            "  \"timemillis\": t,       (numeric) Current UNIX time in milliseconds\n"
-            "  \"uploadtarget\":\n"
-            "  {\n"
-            "    \"timeframe\": n,                         (numeric) Length of the measuring timeframe in seconds\n"
-            "    \"target\": n,                            (numeric) Target in bytes\n"
-            "    \"target_reached\": true|false,           (boolean) True if target is reached\n"
-            "    \"serve_historical_blocks\": true|false,  (boolean) True if serving historical blocks\n"
-            "    \"bytes_left_in_cycle\": t,               (numeric) Bytes left in current time cycle\n"
-            "    \"time_left_in_cycle\": t                 (numeric) Seconds left in current time cycle\n"
-            "  }\n"
+            "  \"timemillis\": t        (numeric) Total cpu time\n"
             "}\n"
-                },
-                RPCExamples{
-                    HelpExampleCli("getnettotals", "")
-            + HelpExampleRpc("getnettotals", "")
-                },
-            }.Check(request);
-    if(!g_rpc_node->connman)
-        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
+            "\nExamples:\n" +
+            HelpExampleCli("getnettotals", "") + HelpExampleRpc("getnettotals", ""));
 
-    UniValue obj(UniValue::VOBJ);
-    obj.pushKV("totalbytesrecv", g_rpc_node->connman->GetTotalBytesRecv());
-    obj.pushKV("totalbytessent", g_rpc_node->connman->GetTotalBytesSent());
-    obj.pushKV("timemillis", GetTimeMillis());
-
-    UniValue outboundLimit(UniValue::VOBJ);
-    outboundLimit.pushKV("timeframe", g_rpc_node->connman->GetMaxOutboundTimeframe());
-    outboundLimit.pushKV("target", g_rpc_node->connman->GetMaxOutboundTarget());
-    outboundLimit.pushKV("target_reached", g_rpc_node->connman->OutboundTargetReached(false));
-    outboundLimit.pushKV("serve_historical_blocks", !g_rpc_node->connman->OutboundTargetReached(true));
-    outboundLimit.pushKV("bytes_left_in_cycle", g_rpc_node->connman->GetOutboundTargetBytesLeft());
-    outboundLimit.pushKV("time_left_in_cycle", g_rpc_node->connman->GetMaxOutboundTimeLeftInCycle());
-    obj.pushKV("uploadtarget", outboundLimit);
+    Object obj;
+    obj.push_back(Pair("totalbytesrecv", CNode::GetTotalBytesRecv()));
+    obj.push_back(Pair("totalbytessent", CNode::GetTotalBytesSent()));
+    obj.push_back(Pair("timemillis", GetTimeMillis()));
     return obj;
 }
 
-static UniValue GetNetworksInfo()
+static Array GetNetworksInfo()
 {
-    UniValue networks(UniValue::VARR);
-    for(int n=0; n<NET_MAX; ++n)
-    {
+    Array networks;
+    for (int n = 0; n < NET_MAX; ++n) {
         enum Network network = static_cast<enum Network>(n);
-        if(network == NET_UNROUTABLE || network == NET_INTERNAL)
+        if (network == NET_UNROUTABLE)
             continue;
         proxyType proxy;
-        UniValue obj(UniValue::VOBJ);
+        Object obj;
         GetProxy(network, proxy);
-        obj.pushKV("name", GetNetworkName(network));
-        obj.pushKV("limited", !IsReachable(network));
-        obj.pushKV("reachable", IsReachable(network));
-        obj.pushKV("proxy", proxy.IsValid() ? proxy.proxy.ToStringIPPort() : std::string());
-        obj.pushKV("proxy_randomize_credentials", proxy.randomize_credentials);
+        obj.push_back(Pair("name", GetNetworkName(network)));
+        obj.push_back(Pair("limited", IsLimited(network)));
+        obj.push_back(Pair("reachable", IsReachable(network)));
+        obj.push_back(Pair("proxy", proxy.IsValid() ? proxy.proxy.ToStringIPPort() : string()));
+        obj.push_back(Pair("proxy_randomize_credentials", proxy.randomize_credentials));
         networks.push_back(obj);
     }
     return networks;
 }
 
-static UniValue getnetworkinfo(const JSONRPCRequest& request)
+Value getnetworkinfo(const Array& params, bool fHelp)
 {
-            RPCHelpMan{"getnetworkinfo",
-                "Returns an object containing various state info regarding P2P networking.\n",
-                {},
-                RPCResult{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "getnetworkinfo\n"
+            "Returns an object containing various state info regarding P2P networking.\n"
+            "\nResult:\n"
             "{\n"
             "  \"version\": xxxxx,                      (numeric) the server version\n"
-            "  \"subversion\": \"/Satoshi:x.x.x/\",     (string) the server subversion string\n"
+            "  \"subversion\": \"/VICE Core:x.x.x.x/\",     (string) the server subversion string\n"
             "  \"protocolversion\": xxxxx,              (numeric) the protocol version\n"
             "  \"localservices\": \"xxxxxxxxxxxxxxxx\", (string) the services we offer to the network\n"
-            "  \"localservicesnames\": [                (array) the services we offer to the network, in human-readable form\n"
-            "      \"SERVICE_NAME\",                    (string) the service name\n"
-            "       ...\n"
-            "   ],\n"
-            "  \"localrelay\": true|false,              (bool) true if transaction relay is requested from peers\n"
             "  \"timeoffset\": xxxxx,                   (numeric) the time offset\n"
             "  \"connections\": xxxxx,                  (numeric) the number of connections\n"
-            "  \"networkactive\": true|false,           (bool) whether p2p networking is enabled\n"
             "  \"networks\": [                          (array) information per network\n"
             "  {\n"
             "    \"name\": \"xxx\",                     (string) network (ipv4, ipv6 or onion)\n"
             "    \"limited\": true|false,               (boolean) is the network limited using -onlynet?\n"
             "    \"reachable\": true|false,             (boolean) is the network reachable?\n"
             "    \"proxy\": \"host:port\"               (string) the proxy that is used for this network, or empty if none\n"
-            "    \"proxy_randomize_credentials\": true|false,  (string) Whether randomized credentials are used\n"
             "  }\n"
             "  ,...\n"
             "  ],\n"
-            "  \"relayfee\": x.xxxxxxxx,                (numeric) minimum relay fee for transactions in " + CURRENCY_UNIT + "/kB\n"
-            "  \"incrementalfee\": x.xxxxxxxx,          (numeric) minimum fee increment for mempool limiting or BIP 125 replacement in " + CURRENCY_UNIT + "/kB\n"
+            "  \"relayfee\": x.xxxxxxxx,                (numeric) minimum relay fee for non-free transactions in VN/kb\n"
             "  \"localaddresses\": [                    (array) list of local addresses\n"
             "  {\n"
             "    \"address\": \"xxxx\",                 (string) network address\n"
@@ -485,279 +430,136 @@ static UniValue getnetworkinfo(const JSONRPCRequest& request)
             "  }\n"
             "  ,...\n"
             "  ]\n"
-            "  \"warnings\": \"...\"                    (string) any network and blockchain warnings\n"
             "}\n"
-                },
-                RPCExamples{
-                    HelpExampleCli("getnetworkinfo", "")
-            + HelpExampleRpc("getnetworkinfo", "")
-                },
-            }.Check(request);
+            "\nExamples:\n" +
+            HelpExampleCli("getnetworkinfo", "") + HelpExampleRpc("getnetworkinfo", ""));
 
-    LOCK(cs_main);
-    UniValue obj(UniValue::VOBJ);
-    obj.pushKV("version",       CLIENT_VERSION);
-    obj.pushKV("subversion",    strSubVersion);
-    obj.pushKV("protocolversion",PROTOCOL_VERSION);
-    if (g_rpc_node->connman) {
-        ServiceFlags services = g_rpc_node->connman->GetLocalServices();
-        obj.pushKV("localservices", strprintf("%016x", services));
-        obj.pushKV("localservicesnames", GetServicesNames(services));
-    }
-    obj.pushKV("localrelay", g_relay_txes);
-    obj.pushKV("timeoffset",    GetTimeOffset());
-    if (g_rpc_node->connman) {
-        obj.pushKV("networkactive", g_rpc_node->connman->GetNetworkActive());
-        obj.pushKV("connections",   (int)g_rpc_node->connman->GetNodeCount(CConnman::CONNECTIONS_ALL));
-    }
-    obj.pushKV("networks",      GetNetworksInfo());
-    obj.pushKV("relayfee",      ValueFromAmount(::minRelayTxFee.GetFeePerK()));
-    obj.pushKV("incrementalfee", ValueFromAmount(::incrementalRelayFee.GetFeePerK()));
-    UniValue localAddresses(UniValue::VARR);
+    Object obj;
+    obj.push_back(Pair("version", CLIENT_VERSION));
+    obj.push_back(Pair("subversion",
+        FormatSubVersion(CLIENT_NAME, CLIENT_VERSION, std::vector<string>())));
+    obj.push_back(Pair("protocolversion", PROTOCOL_VERSION));
+    obj.push_back(Pair("localservices", strprintf("%016x", nLocalServices)));
+    obj.push_back(Pair("timeoffset", GetTimeOffset()));
+    obj.push_back(Pair("connections", (int)vNodes.size()));
+    obj.push_back(Pair("networks", GetNetworksInfo()));
+    obj.push_back(Pair("relayfee", ValueFromAmount(::minRelayTxFee.GetFeePerK())));
+    Array localAddresses;
     {
         LOCK(cs_mapLocalHost);
-        for (const std::pair<const CNetAddr, LocalServiceInfo> &item : mapLocalHost)
-        {
-            UniValue rec(UniValue::VOBJ);
-            rec.pushKV("address", item.first.ToString());
-            rec.pushKV("port", item.second.nPort);
-            rec.pushKV("score", item.second.nScore);
+        BOOST_FOREACH (const PAIRTYPE(CNetAddr, LocalServiceInfo) & item, mapLocalHost) {
+            Object rec;
+            rec.push_back(Pair("address", item.first.ToString()));
+            rec.push_back(Pair("port", item.second.nPort));
+            rec.push_back(Pair("score", item.second.nScore));
             localAddresses.push_back(rec);
         }
     }
-    obj.pushKV("localaddresses", localAddresses);
-    obj.pushKV("warnings",       GetWarnings(false));
+    obj.push_back(Pair("localaddresses", localAddresses));
     return obj;
 }
 
-static UniValue setban(const JSONRPCRequest& request)
+Value setban(const Array& params, bool fHelp)
 {
-    const RPCHelpMan help{"setban",
-                "\nAttempts to add or remove an IP/Subnet from the banned list.\n",
-                {
-                    {"subnet", RPCArg::Type::STR, RPCArg::Optional::NO, "The IP/Subnet (see getpeerinfo for nodes IP) with an optional netmask (default is /32 = single IP)"},
-                    {"command", RPCArg::Type::STR, RPCArg::Optional::NO, "'add' to add an IP/Subnet to the list, 'remove' to remove an IP/Subnet from the list"},
-                    {"bantime", RPCArg::Type::NUM, /* default */ "0", "time in seconds how long (or until when if [absolute] is set) the IP is banned (0 or empty means using the default time of 24h which can also be overwritten by the -bantime startup argument)"},
-                    {"absolute", RPCArg::Type::BOOL, /* default */ "false", "If set, the bantime must be an absolute timestamp expressed in " + UNIX_EPOCH_TIME},
-                },
-                RPCResults{},
-                RPCExamples{
-                    HelpExampleCli("setban", "\"192.168.0.6\" \"add\" 86400")
+    string strCommand;
+    if (params.size() >= 2)
+        strCommand = params[1].get_str();
+    if (fHelp || params.size() < 2 ||
+        (strCommand != "add" && strCommand != "remove"))
+        throw runtime_error(
+                            "setban \"ip(/netmask)\" \"add|remove\" (bantime) (absolute)\n"
+                            "\nAttempts add or remove a IP/Subnet from the banned list.\n"
+                            "\nArguments:\n"
+                            "1. \"ip(/netmask)\" (string, required) The IP/Subnet (see getpeerinfo for nodes ip) with a optional netmask (default is /32 = single ip)\n"
+                            "2. \"command\"      (string, required) 'add' to add a IP/Subnet to the list, 'remove' to remove a IP/Subnet from the list\n"
+                            "3. \"bantime\"      (numeric, optional) time in seconds how long (or until when if [absolute] is set) the ip is banned (0 or empty means using the default time of 24h which can also be overwritten by the -bantime startup argument)\n"
+                            "4. \"absolute\"     (boolean, optional) If set, the bantime must be a absolute timestamp in seconds since epoch (Jan 1 1970 GMT)\n"
+                            "\nExamples:\n"
+                            + HelpExampleCli("setban", "\"192.168.0.6\" \"add\" 86400")
                             + HelpExampleCli("setban", "\"192.168.0.0/24\" \"add\"")
-                            + HelpExampleRpc("setban", "\"192.168.0.6\", \"add\", 86400")
-                },
-    };
-    std::string strCommand;
-    if (!request.params[1].isNull())
-        strCommand = request.params[1].get_str();
-    if (request.fHelp || !help.IsValidNumArgs(request.params.size()) || (strCommand != "add" && strCommand != "remove")) {
-        throw std::runtime_error(help.ToString());
-    }
-    if (!g_rpc_node->banman) {
-        throw JSONRPCError(RPC_DATABASE_ERROR, "Error: Ban database not loaded");
-    }
+                            + HelpExampleRpc("setban", "\"192.168.0.6\", \"add\" 86400")
+                            );
 
     CSubNet subNet;
     CNetAddr netAddr;
     bool isSubnet = false;
 
-    if (request.params[0].get_str().find('/') != std::string::npos)
+    if (params[0].get_str().find("/") != string::npos)
         isSubnet = true;
 
-    if (!isSubnet) {
-        CNetAddr resolved;
-        LookupHost(request.params[0].get_str(), resolved, false);
-        netAddr = resolved;
-    }
+    if (!isSubnet)
+        netAddr = CNetAddr(params[0].get_str());
     else
-        LookupSubNet(request.params[0].get_str(), subNet);
+        subNet = CSubNet(params[0].get_str());
 
     if (! (isSubnet ? subNet.IsValid() : netAddr.IsValid()) )
-        throw JSONRPCError(RPC_CLIENT_INVALID_IP_OR_SUBNET, "Error: Invalid IP/Subnet");
+        throw JSONRPCError(RPC_CLIENT_NODE_ALREADY_ADDED, "Error: Invalid IP/Subnet");
 
     if (strCommand == "add")
     {
-        if (isSubnet ? g_rpc_node->banman->IsBanned(subNet) : g_rpc_node->banman->IsBanned(netAddr)) {
+        if (isSubnet ? CNode::IsBanned(subNet) : CNode::IsBanned(netAddr))
             throw JSONRPCError(RPC_CLIENT_NODE_ALREADY_ADDED, "Error: IP/Subnet already banned");
-        }
 
         int64_t banTime = 0; //use standard bantime if not specified
-        if (!request.params[2].isNull())
-            banTime = request.params[2].get_int64();
+        if (params.size() >= 3 && params[2].get_int64() > 0)
+            banTime = params[2].get_int64();
 
         bool absolute = false;
-        if (request.params[3].isTrue())
+        if (params.size() == 4 && params[3].get_bool() == true)
             absolute = true;
 
-        if (isSubnet) {
-            g_rpc_node->banman->Ban(subNet, BanReasonManuallyAdded, banTime, absolute);
-            if (g_rpc_node->connman) {
-                g_rpc_node->connman->DisconnectNode(subNet);
-            }
-        } else {
-            g_rpc_node->banman->Ban(netAddr, BanReasonManuallyAdded, banTime, absolute);
-            if (g_rpc_node->connman) {
-                g_rpc_node->connman->DisconnectNode(netAddr);
-            }
-        }
+        isSubnet ? CNode::Ban(subNet, BanReasonManuallyAdded, banTime, absolute) : CNode::Ban(netAddr, BanReasonManuallyAdded, banTime, absolute);
     }
     else if(strCommand == "remove")
     {
-        if (!( isSubnet ? g_rpc_node->banman->Unban(subNet) : g_rpc_node->banman->Unban(netAddr) )) {
-            throw JSONRPCError(RPC_CLIENT_INVALID_IP_OR_SUBNET, "Error: Unban failed. Requested address/subnet was not previously banned.");
-        }
+        if (!( isSubnet ? CNode::Unban(subNet) : CNode::Unban(netAddr) ))
+            throw JSONRPCError(RPC_MISC_ERROR, "Error: Unban failed");
     }
-    return NullUniValue;
+
+    return true;
 }
 
-static UniValue listbanned(const JSONRPCRequest& request)
+Value listbanned(const Array& params, bool fHelp)
 {
-            RPCHelpMan{"listbanned",
-                "\nList all banned IPs/Subnets.\n",
-                {},
-                RPCResults{},
-                RPCExamples{
-                    HelpExampleCli("listbanned", "")
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+                            "listbanned\n"
+                            "\nList all banned IPs/Subnets.\n"
+                            "\nExamples:\n"
+                            + HelpExampleCli("listbanned", "")
                             + HelpExampleRpc("listbanned", "")
-                },
-            }.Check(request);
-
-    if(!g_rpc_node->banman) {
-        throw JSONRPCError(RPC_DATABASE_ERROR, "Error: Ban database not loaded");
-    }
+                            );
 
     banmap_t banMap;
-    g_rpc_node->banman->GetBanned(banMap);
+    CNode::GetBanned(banMap);
 
-    UniValue bannedAddresses(UniValue::VARR);
-    for (const auto& entry : banMap)
+    Array bannedAddresses;
+    for (banmap_t::iterator it = banMap.begin(); it != banMap.end(); it++)
     {
-        const CBanEntry& banEntry = entry.second;
-        UniValue rec(UniValue::VOBJ);
-        rec.pushKV("address", entry.first.ToString());
-        rec.pushKV("banned_until", banEntry.nBanUntil);
-        rec.pushKV("ban_created", banEntry.nCreateTime);
-        rec.pushKV("ban_reason", banEntry.banReasonToString());
-
+        CBanEntry banEntry = (*it).second;
+        Object rec;
+        rec.push_back(Pair("address", (*it).first.ToString()));
+        rec.push_back(Pair("banned_until", banEntry.nBanUntil));
+        rec.push_back(Pair("ban_created", banEntry.nCreateTime));
+        rec.push_back(Pair("ban_reason", banEntry.banReasonToString()));
         bannedAddresses.push_back(rec);
     }
 
     return bannedAddresses;
 }
 
-static UniValue clearbanned(const JSONRPCRequest& request)
+Value clearbanned(const Array& params, bool fHelp)
 {
-            RPCHelpMan{"clearbanned",
-                "\nClear all banned IPs.\n",
-                {},
-                RPCResults{},
-                RPCExamples{
-                    HelpExampleCli("clearbanned", "")
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+                            "clearbanned\n"
+                            "\nClear all banned IPs.\n"
+                            "\nExamples:\n"
+                            + HelpExampleCli("clearbanned", "")
                             + HelpExampleRpc("clearbanned", "")
-                },
-            }.Check(request);
-    if (!g_rpc_node->banman) {
-        throw JSONRPCError(RPC_DATABASE_ERROR, "Error: Ban database not loaded");
-    }
+                            );
 
-    g_rpc_node->banman->ClearBanned();
+    CNode::ClearBanned();
 
-    return NullUniValue;
-}
-
-static UniValue setnetworkactive(const JSONRPCRequest& request)
-{
-            RPCHelpMan{"setnetworkactive",
-                "\nDisable/enable all p2p network activity.\n",
-                {
-                    {"state", RPCArg::Type::BOOL, RPCArg::Optional::NO, "true to enable networking, false to disable"},
-                },
-                RPCResults{},
-                RPCExamples{""},
-            }.Check(request);
-
-    if (!g_rpc_node->connman) {
-        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
-    }
-
-    g_rpc_node->connman->SetNetworkActive(request.params[0].get_bool());
-
-    return g_rpc_node->connman->GetNetworkActive();
-}
-
-static UniValue getnodeaddresses(const JSONRPCRequest& request)
-{
-            RPCHelpMan{"getnodeaddresses",
-                "\nReturn known addresses which can potentially be used to find new nodes in the network\n",
-                {
-                    {"count", RPCArg::Type::NUM, /* default */ "1", "How many addresses to return. Limited to the smaller of " + std::to_string(ADDRMAN_GETADDR_MAX) + " or " + std::to_string(ADDRMAN_GETADDR_MAX_PCT) + "% of all known addresses."},
-                },
-                RPCResult{
-            "[\n"
-            "  {\n"
-            "    \"time\": ttt,                (numeric) The " + UNIX_EPOCH_TIME + " of when the node was last seen\n"
-            "    \"services\": n,              (numeric) The services offered\n"
-            "    \"address\": \"host\",          (string) The address of the node\n"
-            "    \"port\": n                   (numeric) The port of the node\n"
-            "  }\n"
-            "  ,....\n"
-            "]\n"
-                },
-                RPCExamples{
-                    HelpExampleCli("getnodeaddresses", "8")
-            + HelpExampleRpc("getnodeaddresses", "8")
-                },
-            }.Check(request);
-    if (!g_rpc_node->connman) {
-        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
-    }
-
-    int count = 1;
-    if (!request.params[0].isNull()) {
-        count = request.params[0].get_int();
-        if (count <= 0) {
-            throw JSONRPCError(RPC_INVALID_PARAMETER, "Address count out of range");
-        }
-    }
-    // returns a shuffled list of CAddress
-    std::vector<CAddress> vAddr = g_rpc_node->connman->GetAddresses();
-    UniValue ret(UniValue::VARR);
-
-    int address_return_count = std::min<int>(count, vAddr.size());
-    for (int i = 0; i < address_return_count; ++i) {
-        UniValue obj(UniValue::VOBJ);
-        const CAddress& addr = vAddr[i];
-        obj.pushKV("time", (int)addr.nTime);
-        obj.pushKV("services", (uint64_t)addr.nServices);
-        obj.pushKV("address", addr.ToStringIP());
-        obj.pushKV("port", addr.GetPort());
-        ret.push_back(obj);
-    }
-    return ret;
-}
-
-// clang-format off
-static const CRPCCommand commands[] =
-{ //  category              name                      actor (function)         argNames
-  //  --------------------- ------------------------  -----------------------  ----------
-    { "network",            "getconnectioncount",     &getconnectioncount,     {} },
-    { "network",            "ping",                   &ping,                   {} },
-    { "network",            "getpeerinfo",            &getpeerinfo,            {} },
-    { "network",            "addnode",                &addnode,                {"node","command"} },
-    { "network",            "disconnectnode",         &disconnectnode,         {"address", "nodeid"} },
-    { "network",            "getaddednodeinfo",       &getaddednodeinfo,       {"node"} },
-    { "network",            "getnettotals",           &getnettotals,           {} },
-    { "network",            "getnetworkinfo",         &getnetworkinfo,         {} },
-    { "network",            "setban",                 &setban,                 {"subnet", "command", "bantime", "absolute"} },
-    { "network",            "listbanned",             &listbanned,             {} },
-    { "network",            "clearbanned",            &clearbanned,            {} },
-    { "network",            "setnetworkactive",       &setnetworkactive,       {"state"} },
-    { "network",            "getnodeaddresses",       &getnodeaddresses,       {"count"} },
-};
-// clang-format on
-
-void RegisterNetRPCCommands(CRPCTable &t)
-{
-    for (unsigned int vcidx = 0; vcidx < ARRAYLEN(commands); vcidx++)
-        t.appendCommand(commands[vcidx].name, &commands[vcidx]);
+    return true;
 }

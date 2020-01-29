@@ -1,12 +1,12 @@
-# Block and Transaction Broadcasting with ZeroMQ
+# Block and Transaction Broadcasting With ZeroMQ
 
 [ZeroMQ](http://zeromq.org/) is a lightweight wrapper around TCP
 connections, inter-process communication, and shared-memory,
 providing various message-oriented semantics such as publish/subscribe,
 request/reply, and push/pull.
 
-The Bitcoin Core daemon can be configured to act as a trusted "border
-router", implementing the bitcoin wire protocol and relay, making
+The ViceNetwork Core daemon can be configured to act as a trusted "border
+router", implementing the vicenetwork wire protocol and relay, making
 consensus decisions, maintaining the local blockchain database,
 broadcasting locally generated transactions into the network, and
 providing a queryable RPC interface to interact on a polled basis for
@@ -33,62 +33,51 @@ buffering or reassembly.
 
 ## Prerequisites
 
-The ZeroMQ feature in Bitcoin Core requires the ZeroMQ API >= 4.0.0
-[libzmq](https://github.com/zeromq/libzmq/releases).
-For version information, see [dependencies.md](dependencies.md).
-Typically, it is packaged by distributions as something like
+The ZeroMQ feature in ViceNetwork Core requires ZeroMQ API version 4.x or
+newer. Typically, it is packaged by distributions as something like
 *libzmq3-dev*. The C++ wrapper for ZeroMQ is *not* needed.
 
 In order to run the example Python client scripts in contrib/ one must
-also install *python3-zmq*, though this is not necessary for daemon
+also install *python-zmq*, though this is not necessary for daemon
 operation.
 
 ## Enabling
 
 By default, the ZeroMQ feature is automatically compiled in if the
 necessary prerequisites are found.  To disable, use --disable-zmq
-during the *configure* step of building bitcoind:
+during the *configure* step of building vicenetworkd:
 
     $ ./configure --disable-zmq (other options)
 
 To actually enable operation, one must set the appropriate options on
-the command line or in the configuration file.
+the commandline or in the configuration file.
 
 ## Usage
 
 Currently, the following notifications are supported:
 
     -zmqpubhashtx=address
+    -zmqpubhashtxlock=address
     -zmqpubhashblock=address
     -zmqpubrawblock=address
     -zmqpubrawtx=address
+    -zmqpubrawtxlock=address
 
 The socket type is PUB and the address must be a valid ZeroMQ socket
 address. The same address can be used in more than one notification.
 
-The option to set the PUB socket's outbound message high water mark
-(SNDHWM) may be set individually for each notification:
-
-    -zmqpubhashtxhwm=n
-    -zmqpubhashblockhwm=n
-    -zmqpubrawblockhwm=n
-    -zmqpubrawtxhwm=n
-
-The high water mark value must be an integer greater than or equal to 0.
-
 For instance:
 
-    $ bitcoind -zmqpubhashtx=tcp://127.0.0.1:28332 \
-               -zmqpubrawtx=ipc:///tmp/bitcoind.tx.raw \
-               -zmqpubhashtxhwm=10000
+    $ vicenetworkd -zmqpubhashtx=tcp://127.0.0.1:28332 \
+               -zmqpubrawtx=ipc:///tmp/vicenetworkd.tx.raw
 
 Each PUB notification has a topic and body, where the header
 corresponds to the notification type. For instance, for the
 notification `-zmqpubhashtx` the topic is `hashtx` (no null
-terminator) and the body is the transaction hash (32
+terminator) and the body is the hexadecimal transaction hash (32
 bytes).
 
-These options can also be provided in bitcoin.conf.
+These options can also be provided in vicenetwork.conf.
 
 ZeroMQ endpoint specifiers for TCP (and others) are documented in the
 [ZeroMQ API](http://api.zeromq.org/4-0:_start).
@@ -100,9 +89,9 @@ arriving. Please see `contrib/zmq/zmq_sub.py` for a working example.
 
 ## Remarks
 
-From the perspective of bitcoind, the ZeroMQ socket is write-only; PUB
+From the perspective of vicenetworkd, the ZeroMQ socket is write-only; PUB
 sockets don't even have a read function. Thus, there is no state
-introduced into bitcoind directly. Furthermore, no information is
+introduced into vicenetworkd directly. Furthermore, no information is
 broadcast that wasn't already received from the public P2P network.
 
 No authentication or authorization is done on connecting clients; it
@@ -111,11 +100,9 @@ using other means such as firewalling.
 
 Note that when the block chain tip changes, a reorganisation may occur
 and just the tip will be notified. It is up to the subscriber to
-retrieve the chain from the last known block to the new tip. Also note
-that no notification occurs if the tip was in the active chain - this
-is the case after calling invalidateblock RPC.
+retrieve the chain from the last known block to the new tip.
 
 There are several possibilities that ZMQ notification can get lost
-during transmission depending on the communication type you are
-using. Bitcoind appends an up-counting sequence number to each
+during transmission depending on the communication type your are
+using. vicenetworkd appends an up-counting sequence number to each
 notification which allows listeners to detect lost notifications.

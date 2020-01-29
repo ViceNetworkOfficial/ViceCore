@@ -57,6 +57,9 @@
    </item>
    <item>
     <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="cursor">
+      <cursorShape>PointingHandCursor</cursorShape>
+     </property>
      <property name="orientation">
       <enum>Qt::Horizontal</enum>
      </property>
@@ -71,7 +74,7 @@
   <customwidget>
    <class>QValidatedLineEdit</class>
    <extends>QLineEdit</extends>
-   <header>qt/qvalidatedlineedit.h</header>
+   <header>qvalidatedlineedit.h</header>
   </customwidget>
  </customwidgets>
  <resources/>

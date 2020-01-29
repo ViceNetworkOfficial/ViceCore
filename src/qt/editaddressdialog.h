@@ -1,5 +1,5 @@
-// Copyright (c) 2011-2018 The Bitcoin Core developers
-// Distributed under the MIT software license, see the accompanying
+// Copyright (c) 2011-2013 The Bitcoin developers
+// Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_QT_EDITADDRESSDIALOG_H
@@ -9,8 +9,9 @@
 
 class AddressTableModel;
 
-namespace Ui {
-    class EditAddressDialog;
+namespace Ui
+{
+class EditAddressDialog;
 }
 
 QT_BEGIN_NAMESPACE
@@ -25,33 +26,31 @@ class EditAddressDialog : public QDialog
 
 public:
     enum Mode {
+        NewReceivingAddress,
         NewSendingAddress,
         EditReceivingAddress,
         EditSendingAddress
     };
 
-    explicit EditAddressDialog(Mode mode, QWidget *parent = nullptr);
+    explicit EditAddressDialog(Mode mode, QWidget* parent);
     ~EditAddressDialog();
 
-    void setModel(AddressTableModel *model);
+    void setModel(AddressTableModel* model);
     void loadRow(int row);
 
     QString getAddress() const;
-    void setAddress(const QString &address);
+    void setAddress(const QString& address);
 
-public Q_SLOTS:
+public slots:
     void accept();
 
 private:
     bool saveCurrentRow();
 
-    /** Return a descriptive string when adding an already-existing address fails. */
-    QString getDuplicateAddressWarning() const;
-
-    Ui::EditAddressDialog *ui;
-    QDataWidgetMapper *mapper;
+    Ui::EditAddressDialog* ui;
+    QDataWidgetMapper* mapper;
     Mode mode;
-    AddressTableModel *model;
+    AddressTableModel* model;
 
     QString address;
 };

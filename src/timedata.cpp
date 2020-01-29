@@ -1,23 +1,22 @@
-// Copyright (c) 2014-2020 The Bitcoin Core developers
+// Copyright (c) 2014 The Bitcoin developers
+// Copyright (c) 2018-2019 The VICE developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#if defined(HAVE_CONFIG_H)
-#include <config/bitcoin-config.h>
-#endif
+#include "timedata.h"
 
-#include <timedata.h>
+#include "netbase.h"
+#include "sync.h"
+#include "ui_interface.h"
+#include "util.h"
+#include "utilstrencodings.h"
 
-#include <netaddress.h>
-#include <sync.h>
-#include <ui_interface.h>
-#include <util/system.h>
-#include <util/translation.h>
-#include <warnings.h>
+#include <boost/foreach.hpp>
 
+using namespace std;
 
-static RecursiveMutex cs_nTimeOffset;
-static int64_t nTimeOffset GUARDED_BY(cs_nTimeOffset) = 0;
+static CCriticalSection cs_nTimeOffset;
+static int64_t nTimeOffset = 0;
 
 /**
  * "Never go to sea with two chronometers; take one or three."
@@ -42,22 +41,24 @@ static int64_t abs64(int64_t n)
     return (n >= 0 ? n : -n);
 }
 
-#define BITCOIN_TIMEDATA_MAX_SAMPLES 200
+#define VICE_TIMEDATA_MAX_SAMPLES 200
 
-void AddTimeData(const CNetAddr& ip, int64_t nOffsetSample)
+void AddTimeData(const CNetAddr& ip, int64_t nTime)
 {
+    int64_t nOffsetSample = nTime - GetTime();
+
     LOCK(cs_nTimeOffset);
     // Ignore duplicates
-    static std::set<CNetAddr> setKnown;
-    if (setKnown.size() == BITCOIN_TIMEDATA_MAX_SAMPLES)
+    static set<CNetAddr> setKnown;
+    if (setKnown.size() == VICE_TIMEDATA_MAX_SAMPLES)
         return;
     if (!setKnown.insert(ip).second)
         return;
 
     // Add data
-    static CMedianFilter<int64_t> vTimeOffsets(BITCOIN_TIMEDATA_MAX_SAMPLES, 0);
+    static CMedianFilter<int64_t> vTimeOffsets(VICE_TIMEDATA_MAX_SAMPLES, 0);
     vTimeOffsets.input(nOffsetSample);
-    LogPrint(BCLog::NET,"added time data, samples %d, offset %+d (%+d minutes)\n", vTimeOffsets.size(), nOffsetSample, nOffsetSample/60);
+    LogPrintf("Added time data, samples %d, offset %+d (%+d minutes)\n", vTimeOffsets.size(), nOffsetSample, nOffsetSample / 60);
 
     // There is a known issue here (see issue #4521):
     //
@@ -76,45 +77,37 @@ void AddTimeData(const CNetAddr& ip, int64_t nOffsetSample)
     // So we should hold off on fixing this and clean it up as part of
     // a timing cleanup that strengthens it in a number of other ways.
     //
-    if (vTimeOffsets.size() >= 5 && vTimeOffsets.size() % 2 == 1)
-    {
+    if (vTimeOffsets.size() >= 5 && vTimeOffsets.size() % 2 == 1) {
         int64_t nMedian = vTimeOffsets.median();
         std::vector<int64_t> vSorted = vTimeOffsets.sorted();
         // Only let other nodes change our time by so much
-        if (abs64(nMedian) <= std::max<int64_t>(0, gArgs.GetArg("-maxtimeadjustment", DEFAULT_MAX_TIME_ADJUSTMENT)))
-        {
+        if (abs64(nMedian) < 70 * 60) {
             nTimeOffset = nMedian;
-        }
-        else
-        {
+        } else {
             nTimeOffset = 0;
 
             static bool fDone;
-            if (!fDone)
-            {
+            if (!fDone) {
                 // If nobody has a time different than ours but within 5 minutes of ours, give a warning
                 bool fMatch = false;
-                for (const int64_t nOffset : vSorted)
+                BOOST_FOREACH (int64_t nOffset, vSorted)
                     if (nOffset != 0 && abs64(nOffset) < 5 * 60)
                         fMatch = true;
 
-                if (!fMatch)
-                {
+                if (!fMatch) {
                     fDone = true;
-                    std::string strMessage = strprintf(_("Please check that your computer's date and time are correct! If your clock is wrong, %s will not work properly.").translated, PACKAGE_NAME);
-                    SetMiscWarning(strMessage);
+                    string strMessage = _("Warning: Please check that your computer's date and time are correct! If your clock is wrong VICE Core will not work properly.");
+                    strMiscWarning = strMessage;
+                    LogPrintf("*** %s\n", strMessage);
                     uiInterface.ThreadSafeMessageBox(strMessage, "", CClientUIInterface::MSG_WARNING);
                 }
             }
         }
-
-        if (LogAcceptCategory(BCLog::NET)) {
-            for (const int64_t n : vSorted) {
-                LogPrint(BCLog::NET, "%+d  ", n); /* Continued */
-            }
-            LogPrint(BCLog::NET, "|  "); /* Continued */
-
-            LogPrint(BCLog::NET, "nTimeOffset = %+d  (%+d minutes)\n", nTimeOffset, nTimeOffset/60);
+        if (fDebug) {
+            BOOST_FOREACH (int64_t n, vSorted)
+                LogPrintf("%+d  ", n);
+            LogPrintf("|  ");
         }
+        LogPrintf("nTimeOffset = %+d  (%+d minutes)\n", nTimeOffset, nTimeOffset / 60);
     }
 }

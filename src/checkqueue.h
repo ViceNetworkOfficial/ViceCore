@@ -1,22 +1,22 @@
-// Copyright (c) 2012-2018 The Bitcoin Core developers
+// Copyright (c) 2012-2014 The Bitcoin developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_CHECKQUEUE_H
 #define BITCOIN_CHECKQUEUE_H
 
-#include <sync.h>
-
 #include <algorithm>
 #include <vector>
 
+#include <boost/foreach.hpp>
 #include <boost/thread/condition_variable.hpp>
+#include <boost/thread/locks.hpp>
 #include <boost/thread/mutex.hpp>
 
 template <typename T>
 class CCheckQueueControl;
 
-/**
+/** 
  * Queue for verifications that have to be performed.
   * The verifications are represented by a type T, which must provide an
   * operator(), returning a bool.
@@ -54,10 +54,13 @@ private:
 
     /**
      * Number of verifications that haven't completed yet.
-     * This includes elements that are no longer queued, but still in the
+     * This includes elements that are not anymore in queue, but still in
      * worker's own batches.
      */
     unsigned int nTodo;
+
+    //! Whether we're shutting down.
+    bool fQuit;
 
     //! The maximum number of elements to be processed in one batch
     unsigned int nBatchSize;
@@ -78,7 +81,7 @@ private:
                     fAllOk &= fOk;
                     nTodo -= nNow;
                     if (nTodo == 0 && !fMaster)
-                        // We processed the last element; inform the master it can exit and return the result
+                        // We processed the last element; inform the master he can exit and return the result
                         condMaster.notify_one();
                 } else {
                     // first iteration
@@ -86,11 +89,12 @@ private:
                 }
                 // logically, the do loop starts here
                 while (queue.empty()) {
-                    if (fMaster && nTodo == 0) {
+                    if ((fMaster || fQuit) && nTodo == 0) {
                         nTotal--;
                         bool fRet = fAllOk;
                         // reset the status for new work later
-                        fAllOk = true;
+                        if (fMaster)
+                            fAllOk = true;
                         // return the current status
                         return fRet;
                     }
@@ -115,7 +119,7 @@ private:
                 fOk = fAllOk;
             }
             // execute work
-            for (T& check : vChecks)
+            BOOST_FOREACH (T& check, vChecks)
                 if (fOk)
                     fOk = check();
             vChecks.clear();
@@ -123,11 +127,8 @@ private:
     }
 
 public:
-    //! Mutex to ensure only one concurrent CCheckQueueControl
-    boost::mutex ControlMutex;
-
     //! Create a new check queue
-    explicit CCheckQueue(unsigned int nBatchSizeIn) : nIdle(0), nTotal(0), fAllOk(true), nTodo(0), nBatchSize(nBatchSizeIn) {}
+    CCheckQueue(unsigned int nBatchSizeIn) : nIdle(0), nTotal(0), fAllOk(true), nTodo(0), fQuit(false), nBatchSize(nBatchSizeIn) {}
 
     //! Worker thread
     void Thread()
@@ -135,7 +136,7 @@ public:
         Loop();
     }
 
-    //! Wait until execution finishes, and return whether all evaluations were successful.
+    //! Wait until execution finishes, and return whether all evaluations where successful.
     bool Wait()
     {
         return Loop(true);
@@ -145,7 +146,7 @@ public:
     void Add(std::vector<T>& vChecks)
     {
         boost::unique_lock<boost::mutex> lock(mutex);
-        for (T& check : vChecks) {
+        BOOST_FOREACH (T& check, vChecks) {
             queue.push_back(T());
             check.swap(queue.back());
         }
@@ -160,9 +161,14 @@ public:
     {
     }
 
+    bool IsIdle()
+    {
+        boost::unique_lock<boost::mutex> lock(mutex);
+        return (nTotal == nIdle && nTodo == 0 && fAllOk == true);
+    }
 };
 
-/**
+/** 
  * RAII-style controller object for a CCheckQueue that guarantees the passed
  * queue is finished before continuing.
  */
@@ -170,24 +176,22 @@ template <typename T>
 class CCheckQueueControl
 {
 private:
-    CCheckQueue<T> * const pqueue;
+    CCheckQueue<T>* pqueue;
     bool fDone;
 
 public:
-    CCheckQueueControl() = delete;
-    CCheckQueueControl(const CCheckQueueControl&) = delete;
-    CCheckQueueControl& operator=(const CCheckQueueControl&) = delete;
-    explicit CCheckQueueControl(CCheckQueue<T> * const pqueueIn) : pqueue(pqueueIn), fDone(false)
+    CCheckQueueControl(CCheckQueue<T>* pqueueIn) : pqueue(pqueueIn), fDone(false)
     {
-        // passed queue is supposed to be unused, or nullptr
-        if (pqueue != nullptr) {
-            ENTER_CRITICAL_SECTION(pqueue->ControlMutex);
+        // passed queue is supposed to be unused, or NULL
+        if (pqueue != NULL) {
+            bool isIdle = pqueue->IsIdle();
+            assert(isIdle);
         }
     }
 
     bool Wait()
     {
-        if (pqueue == nullptr)
+        if (pqueue == NULL)
             return true;
         bool fRet = pqueue->Wait();
         fDone = true;
@@ -196,7 +200,7 @@ public:
 
     void Add(std::vector<T>& vChecks)
     {
-        if (pqueue != nullptr)
+        if (pqueue != NULL)
             pqueue->Add(vChecks);
     }
 
@@ -204,9 +208,6 @@ public:
     {
         if (!fDone)
             Wait();
-        if (pqueue != nullptr) {
-            LEAVE_CRITICAL_SECTION(pqueue->ControlMutex);
-        }
     }
 };
 
