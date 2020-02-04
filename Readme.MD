@@ -33,5 +33,5 @@ verifiable with a built-in blockchain explorer within the software itself
 <tr><td>PoS Maximum Age</td><td>Ø</td></tr>  
 <tr><td>Block Rewards (Staking)</td><td>30%</td></tr>
 <tr><td>Block Rewards (Masternodes)</td><td>60%</td></tr>
-<tr><td>Block Rewards (Development)</td><td>30%</td></tr>
+<tr><td>Block Rewards (Development)</td><td>10%</td></tr>
 </table>
