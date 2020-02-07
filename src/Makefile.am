@@ -80,12 +80,11 @@ BITCOIN_CORE_H = \
   accumulators.h \
   accumulatormap.h \
   addrman.h \
+  alert.h \
   allocators.h \
   amount.h \
   arith_uint256.h \
   base58.h \
-  bip39.h \
-  bip39_english.h \
   bip38.h \
   bloom.h \
   chain.h \
@@ -112,7 +111,6 @@ BITCOIN_CORE_H = \
   eccryptoverify.h \
   ecwrapper.h \
   hash.h \
-  hdchain.h \
   init.h \
   kernel.h \
   swifttx.h \
@@ -138,10 +136,9 @@ BITCOIN_CORE_H = \
   pubkey.h \
   random.h \
   reverse_iterate.h \
-  rpc/client.h \
-  rpc/protocol.h \
-  rpc/server.h \
-  scheduler.h \
+  rpcclient.h \
+  rpcprotocol.h \
+  rpcserver.h \
   script/interpreter.h \
   script/script.h \
   script/sigcache.h \
@@ -198,6 +195,7 @@ libbitcoin_util_a-clientversion.$(OBJEXT): obj/build.h
 libbitcoin_server_a_CPPFLAGS = $(BITCOIN_INCLUDES) $(MINIUPNPC_CPPFLAGS) $(EVENT_CFLAGS) $(EVENT_PTHREADS_CFLAGS)
 libbitcoin_server_a_SOURCES = \
   addrman.cpp \
+  alert.cpp \
   bloom.cpp \
   chain.cpp \
   checkpoints.cpp \
@@ -210,21 +208,20 @@ libbitcoin_server_a_SOURCES = \
   noui.cpp \
   pow.cpp \
   rest.cpp \
-  rpc/blockchain.cpp \
-  rpc/masternode.cpp \
-  rpc/masternode-budget.cpp \
-  rpc/mining.cpp \
-  rpc/misc.cpp \
-  rpc/net.cpp \
-  rpc/rawtransaction.cpp \
-  rpc/server.cpp \
+  rpcblockchain.cpp \
+  rpcmasternode.cpp \
+  rpcmasternode-budget.cpp \
+  rpcmining.cpp \
+  rpcmisc.cpp \
+  rpcnet.cpp \
+  rpcrawtransaction.cpp \
+  rpcserver.cpp \
   script/sigcache.cpp \
   sporkdb.cpp \
   timedata.cpp \
   torcontrol.cpp \
   txdb.cpp \
   txmempool.cpp \
-  ui_interface.cpp \
   validationinterface.cpp \
   $(JSON_H) \
   $(BITCOIN_CORE_H)
@@ -260,9 +257,9 @@ libbitcoin_wallet_a_SOURCES = \
   masternode-sync.cpp \
   masternodeconfig.cpp \
   masternodeman.cpp \
-  rpc/dump.cpp \
+  rpcdump.cpp \
   primitives/zerocoin.cpp \
-  rpc/wallet.cpp \
+  rpcwallet.cpp \
   kernel.cpp \
   wallet.cpp \
   wallet_ismine.cpp \
@@ -298,9 +295,7 @@ crypto_libbitcoin_crypto_a_SOURCES = \
   crypto/echo.c \
   crypto/whirlpool.c \
   crypto/haval.c \
-  crypto/haval_helper.c \
   crypto/hamsi.c \
-  crypto/hamsi_helper.c \
   crypto/fugue.c \
   crypto/sha2.c \
   crypto/common.h \
@@ -370,7 +365,6 @@ libbitcoin_common_a_SOURCES = \
   allocators.cpp \
   amount.cpp \
   base58.cpp \
-  bip39.cpp \
   bip38.cpp \
   chainparams.cpp \
   coins.cpp \
@@ -383,13 +377,11 @@ libbitcoin_common_a_SOURCES = \
   eccryptoverify.cpp \
   ecwrapper.cpp \
   hash.cpp \
-  hdchain.cpp \
   key.cpp \
   keystore.cpp \
   netbase.cpp \
   protocol.cpp \
   pubkey.cpp \
-  scheduler.cpp \
   script/interpreter.cpp \
   script/script.cpp \
   script/sign.cpp \
@@ -411,7 +403,7 @@ libbitcoin_util_a_SOURCES = \
   chainparamsbase.cpp \
   clientversion.cpp \
   random.cpp \
-  rpc/protocol.cpp \
+  rpcprotocol.cpp \
   sync.cpp \
   uint256.cpp \
   util.cpp \
@@ -428,7 +420,7 @@ endif
 # cli: shared between vicenetwork-cli and vicenetwork-qt
 libbitcoin_cli_a_CPPFLAGS = $(BITCOIN_INCLUDES)
 libbitcoin_cli_a_SOURCES = \
-  rpc/client.cpp \
+  rpcclient.cpp \
   $(BITCOIN_CORE_H)
 
 nodist_libbitcoin_util_a_SOURCES = $(srcdir)/obj/build.h
